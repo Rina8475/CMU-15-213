@@ -156,6 +156,8 @@ struct S2 {
 首先是浮点数寄存器，在 `AVX` 浮点体系结构中，一共有 16 个 `YMM` 寄存器，如下图所示
 ![MediaRegisters](Lec8/MediaRegisters.png)
 
+> P.S. 所有的寄存器均为调用者保存
+
 上图解决了需要考虑的问题(1)(3)(4)。而对于浮点数的操作指令，大部分指令和整数操作指令相似，只是指令不同，只需要注意一下矢量运算，如下图所示
 ![SIMDInstructions](Lec8/VectorInstructions.png)
 

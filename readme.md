@@ -18,3 +18,8 @@ sudo apt install gcc-multilib
 ```
 详情可以参考这里
 https://stackoverflow.com/questions/22355436/how-to-compile-32-bit-apps-on-64-bit-ubuntu
+
+(3). 在 cache lab Part B 中，如果系统上没有安装 valgrind，则测试程序 test-trans 会报错，此时直接安装 valgrind 即可
+```shell 
+sudo apt install valgrind
+```

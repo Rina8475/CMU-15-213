@@ -23,3 +23,9 @@ https://stackoverflow.com/questions/22355436/how-to-compile-32-bit-apps-on-64-bi
 ```shell 
 sudo apt install valgrind
 ```
+
+(4). cache lab Part B 中的 driver.py 使用 python2 运行，如果未安装 python2，则使用
+```shell
+sudo apt install python2
+```
+安装即可

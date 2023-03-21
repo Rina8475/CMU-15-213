@@ -29,3 +29,9 @@ sudo apt install valgrind
 sudo apt install python2
 ```
 安装即可
+
+(5). malloc lab 中原始实验包中测试用的trace不存在，下载测试文件的链接如下
+```
+https://github.com/Ethan-Yan27/CSAPP-Labs/tree/master/yzf-malloclab-handout/traces
+```
+

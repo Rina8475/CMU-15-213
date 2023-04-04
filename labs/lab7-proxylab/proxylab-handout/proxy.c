@@ -56,6 +56,9 @@ int generate_header(char *buf, struct Header *header);
 void write_back(int connfd, int clientfd);
 int split_line(char *line, char *spliter, char *tokens[], unsigned tokenlen);
 
+void sigpipe_handler(int sig);
+int Rio_writen_s(int fd, void *usrbuf, size_t n);
+
 int main(int argc, char *argv[])
 {
     unsigned listenfd, connfd;
@@ -68,6 +71,9 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    /* install signal handler */
+    Signal(SIGPIPE, sigpipe_handler);
+    
     listenfd = Open_listenfd(argv[1]);
     while (1) {
         clientlen = sizeof(struct sockaddr_storage);
@@ -119,14 +125,15 @@ void doit(int fd) {
  * if the length over BUF, then return -1 */
 int read_header(int fd, char *buf, unsigned buflen) {
     rio_t rio;
-    unsigned length;
+    unsigned length, readcnt;
     char line[FIELDSIZE];
 
     Rio_readinitb(&rio, fd);
     buf[0] = '\0';
     length = 0;
     while (1) {
-        length += Rio_readlineb(&rio, line, FIELDSIZE);
+        readcnt = Rio_readlineb(&rio, line, FIELDSIZE);
+        length += readcnt;
         if (!(length < buflen-1)) {
             return -1;
         }
@@ -249,7 +256,9 @@ void write_back(int connfd, int clientfd) {
         if (msglen == 0) {
             break;
         }
-        Rio_writen(connfd, message, msglen);
+        if (Rio_writen_s(connfd, message, msglen) < 0) {
+            break;          /* received signal SIGPIPE */
+        }
     }
 }
 
@@ -280,4 +289,23 @@ int split_line(char *line, char *spliter, char *tokens[], unsigned tokenlen) {
     }
     tokens[idx] = NULL;
     return idx;
+}
+
+/* sigpipe_handler - the handler of sigpipe */
+void sigpipe_handler(int sig) {
+    fprintf(stdout, "Received signal SIGPIPE.\n");
+}
+
+/* Rio_writen_s - wrapped function, if write operation return -1, then check
+ * errno, if errno equal to EPIPE, then just return -1, else terminate this 
+ * process. if every thing correct, then return 0 */
+int Rio_writen_s(int fd, void *usrbuf, size_t n) {
+    if (rio_writen(fd, usrbuf, n) < 0) {
+        if (errno == EPIPE) {
+            return -1;
+        } else {
+            unix_error("Rio_readn error");
+        }
+    }
+    return 0;
 }

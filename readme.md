@@ -35,3 +35,10 @@ sudo apt install python2
 https://github.com/Ethan-Yan27/CSAPP-Labs/tree/master/yzf-malloclab-handout/traces
 ```
 
+(6). proxy lab 中的 driver.sh 在第二部分 Concurrency 中可能会在
+```
+Starting the blocking NOP server on port <port>
+```
+后阻塞，这是因为脚本 non-server.py 的解释器不对，将其解释器改为 python3 即可，详情可以参考
+https://blog.csdn.net/weixin_44520881/article/details/109518057
+

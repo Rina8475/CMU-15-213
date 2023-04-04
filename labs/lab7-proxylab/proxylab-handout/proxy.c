@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <assert.h>
 #include "csapp.h"
+#include "sbuf.h"
 
 /* Recommended max cache and object sizes */
 #define MAX_CACHE_SIZE 1049000
@@ -14,6 +15,12 @@
 
 /* the max size of a field */
 #define FIELDSIZE   2048
+
+/* the number of threads in thread pool */
+#define NTHREADS    4
+
+/* the size of buf in struct sbuf */
+#define SBUFSIZE    16
 
 /* this struct store info about URI */
 struct URI {
@@ -44,6 +51,10 @@ struct Header {
 
 /* You won't lose style points for including this long line in your code */
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3";
+static const char *http_version = "HTTP/1.0";
+
+/* Shared buffer of connected descriptors */
+sbuf_t sbuf;    
 
 void doit(int fd);
 int read_header(int fd, char *buf, unsigned buflen);
@@ -58,6 +69,7 @@ int split_line(char *line, char *spliter, char *tokens[], unsigned tokenlen);
 
 void sigpipe_handler(int sig);
 int Rio_writen_s(int fd, void *usrbuf, size_t n);
+void *thread(void *fd);
 
 int main(int argc, char *argv[])
 {
@@ -65,6 +77,7 @@ int main(int argc, char *argv[])
     struct sockaddr_storage clientaddr;
     socklen_t clientlen;
     char host[FIELDSIZE], port[TOKENSIZE];
+    pthread_t tid;
 
     if (argc != 2) {
         fprintf(stderr, "usage: %s <port>\n", argv[0]);
@@ -73,15 +86,21 @@ int main(int argc, char *argv[])
 
     /* install signal handler */
     Signal(SIGPIPE, sigpipe_handler);
+    /* init sbuf */
+    sbuf_init(&sbuf, SBUFSIZE);
+    /* create threads */
+    for (int i = 0; i < NTHREADS; i += 1) {
+        Pthread_create(&tid, NULL, thread, NULL);
+    }
     
+    /* init proxy */
     listenfd = Open_listenfd(argv[1]);
     while (1) {
         clientlen = sizeof(struct sockaddr_storage);
         connfd = Accept(listenfd, (SA *) &clientaddr, &clientlen);
         Getnameinfo((SA *) &clientaddr, clientlen, host, FIELDSIZE, port, TOKENSIZE, 0);
         printf("Connected to (%s %s)\n", host, port);
-        doit(connfd);
-        Close(connfd);
+        sbuf_insert(&sbuf, connfd);
     }
     return 0;
 }
@@ -181,7 +200,7 @@ int parse_starter(char *start, struct Starter *startp) {
         return -1;          /* a malformed request */
     }
     strcpy(startp->method, tokens[0]);
-    strcpy(startp->version, "HTTP/1.0");
+    strcpy(startp->version, http_version);
     /* parse the uri */
     uri = strstr(tokens[1], "//");
     uri += 2;       /* remove the str "http://" */
@@ -251,11 +270,7 @@ void write_back(int connfd, int clientfd) {
     char message[MAXLINE];
     unsigned msglen;
 
-    while (1) {
-        msglen = Rio_readn(clientfd, message, MAXLINE);
-        if (msglen == 0) {
-            break;
-        }
+    while ((msglen = Rio_readn(clientfd, message, MAXLINE)) != 0) {
         if (Rio_writen_s(connfd, message, msglen) < 0) {
             break;          /* received signal SIGPIPE */
         }
@@ -308,4 +323,19 @@ int Rio_writen_s(int fd, void *usrbuf, size_t n) {
         }
     }
     return 0;
+}
+
+/* thread - a routine that every thread will call */
+void *thread(void *arg) {
+    int connfd; 
+    pthread_t tid;
+
+    tid = pthread_self();
+    Pthread_detach(tid);
+    while (1) {         /* endless loop */
+        connfd = sbuf_remove(&sbuf);
+        printf("Thread [%lu] is dealing fd %d.\n", tid, connfd);
+        doit(connfd);
+        Close(connfd);
+    }
 }

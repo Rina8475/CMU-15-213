@@ -68,6 +68,7 @@ void write_back(int connfd, int clientfd);
 int split_line(char *line, char *spliter, char *tokens[], unsigned tokenlen);
 
 void sigpipe_handler(int sig);
+int Rio_readlineb_s(rio_t *rp, void *usrbuf, size_t maxlen);
 int Rio_writen_s(int fd, void *usrbuf, size_t n);
 void *thread(void *fd);
 
@@ -110,12 +111,12 @@ int main(int argc, char *argv[])
 void doit(int fd) {
     struct Header header;
     char message[MAXLINE], *host, *port;
-    unsigned msglen;
-    int clientfd;
+    int msglen, clientfd;
 
     /* read the http msg from user */
-    msglen = read_header(fd, message, MAXLINE);
-    assert(msglen >= 0);
+    if ((msglen = read_header(fd, message, MAXLINE)) < 0) {
+        return;
+    } 
     printf("Header is:\n%s", message);
     /* parse the header */
     if (parse_header(&header, message) < 0) {
@@ -144,24 +145,21 @@ void doit(int fd) {
  * if the length over BUF, then return -1 */
 int read_header(int fd, char *buf, unsigned buflen) {
     rio_t rio;
-    unsigned length, readcnt;
+    int length, readcnt;
     char line[FIELDSIZE];
 
     Rio_readinitb(&rio, fd);
     buf[0] = '\0';
     length = 0;
-    while (1) {
-        readcnt = Rio_readlineb(&rio, line, FIELDSIZE);
+    while ((readcnt = Rio_readlineb_s(&rio, line, FIELDSIZE)) > 0) {
         length += readcnt;
-        if (!(length < buflen-1)) {
-            return -1;
-        }
         sprintf(buf, "%s%s", buf, line);
         if (strcmp(line, "\r\n") == 0) {
             break;
         }
     }
-    return length;
+    assert(length < buflen-1);
+    return (readcnt > 0) ? length : -1;
 }
 
 /* parse_header - parse http header to struct Header, if error, then return -1 */
@@ -267,11 +265,13 @@ int generate_header(char *buf, struct Header *header) {
 
 /* write_back - receive msg from CLIENTFD, and write it to the CONNFD */
 void write_back(int connfd, int clientfd) {
-    char message[MAXLINE];
-    unsigned msglen;
+    rio_t rio;
+    char line[FIELDSIZE];
+    int readcnt;
 
-    while ((msglen = Rio_readn(clientfd, message, MAXLINE)) != 0) {
-        if (Rio_writen_s(connfd, message, msglen) < 0) {
+    Rio_readinitb(&rio, clientfd);
+    while ((readcnt = Rio_readlineb_s(&rio, line, FIELDSIZE)) > 0) {
+        if (Rio_writen_s(connfd, line, readcnt) < 0) {
             break;          /* received signal SIGPIPE */
         }
     }
@@ -311,7 +311,7 @@ void sigpipe_handler(int sig) {
     fprintf(stdout, "Received signal SIGPIPE.\n");
 }
 
-/* Rio_writen_s - wrapped function, if write operation return -1, then check
+/* Rio_writen_s - wrapped function, if writen operation return -1, then check
  * errno, if errno equal to EPIPE, then just return -1, else terminate this 
  * process. if every thing correct, then return 0 */
 int Rio_writen_s(int fd, void *usrbuf, size_t n) {
@@ -319,10 +319,27 @@ int Rio_writen_s(int fd, void *usrbuf, size_t n) {
         if (errno == EPIPE) {
             return -1;
         } else {
-            unix_error("Rio_readn error");
+            unix_error("Rio_writen error");
         }
     }
     return 0;
+}
+
+/* Rio_readlineb_s - wrapped function, if readlineb operation return -1, 
+ * then check errno, if errno equal to ECONNRESET, then just return -1, 
+ * else terminate this process. if every thing correct, then return the 
+ * number of bytes read. */
+int Rio_readlineb_s(rio_t *rp, void *usrbuf, size_t maxlen) {
+    ssize_t rc;
+    
+    if ((rc = rio_readlineb(rp, usrbuf, maxlen)) < 0) {
+        if (errno == ECONNRESET) {
+            return -1;
+        } else {
+            unix_error("Rio_readlineb error");
+        }
+    }
+    return (int) rc;
 }
 
 /* thread - a routine that every thread will call */

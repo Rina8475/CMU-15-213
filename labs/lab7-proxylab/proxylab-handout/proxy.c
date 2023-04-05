@@ -2,10 +2,7 @@
 #include <assert.h>
 #include "csapp.h"
 #include "sbuf.h"
-
-/* Recommended max cache and object sizes */
-#define MAX_CACHE_SIZE 1049000
-#define MAX_OBJECT_SIZE 102400
+#include "cache.h"
 
 /* the max number of fields in a header */
 #define MAXFIELDLEN 32
@@ -56,6 +53,9 @@ static const char *http_version = "HTTP/1.0";
 /* Shared buffer of connected descriptors */
 sbuf_t sbuf;    
 
+/* Shared cache */
+cache_t cache;
+
 void doit(int fd);
 int read_header(int fd, char *buf, unsigned buflen);
 int parse_header(struct Header *header, char *msg);
@@ -64,7 +64,8 @@ void modify_header(struct Header *header);
 void Set_field(struct Header *header, char *name, char *value);
 char *set_field(struct Header *header, char *name, char *value);
 int generate_header(char *buf, struct Header *header);
-void write_back(int connfd, int clientfd);
+int try_cache(int clientfd, char *buf, int buflen);
+void write_back(int connfd, int clientfd, char *buf, int buflen);
 int split_line(char *line, char *spliter, char *tokens[], unsigned tokenlen);
 
 void sigpipe_handler(int sig);
@@ -87,6 +88,8 @@ int main(int argc, char *argv[])
 
     /* install signal handler */
     Signal(SIGPIPE, sigpipe_handler);
+    /* init cache */
+    cache_init(&cache);
     /* init sbuf */
     sbuf_init(&sbuf, SBUFSIZE);
     /* create threads */
@@ -110,8 +113,9 @@ int main(int argc, char *argv[])
  * server, receive the msg from remote server and send it to the user */
 void doit(int fd) {
     struct Header header;
-    char message[MAXLINE], *host, *port;
-    int msglen, clientfd;
+    char message[MAXLINE], *host, *port, uri[FIELDSIZE];
+    int msglen, clientfd, buflen, urilen;
+    char cachebuf[MAX_OBJECT_SIZE];
 
     /* read the http msg from user */
     if ((msglen = read_header(fd, message, MAXLINE)) < 0) {
@@ -124,6 +128,15 @@ void doit(int fd) {
     }
     host = header.starter.uri.host;
     port = header.starter.uri.port;
+    /* generate URI */
+    urilen = sprintf(uri, "%s:%s%s", host, port, header.starter.uri.path);
+    if ((buflen = cache_read(&cache, uri, cachebuf)) >= 0) {
+        /* if this msg has been cached */
+        printf("This uri has been cached.\n");
+        Rio_writen_s(fd, cachebuf, buflen);
+        free(header.field);         /* need free header */
+        return;
+    }
     /* modify the header */
     modify_header(&header);
     /* generate the header to send */
@@ -134,8 +147,16 @@ void doit(int fd) {
     printf("Connected to (%s %s)\n", host, port);
     /* send correct header to remote server  */
     Rio_writen(clientfd, message, msglen);
-    /* write back msg from remote server to user */
-    write_back(fd, clientfd);
+    /* try to cache msg received from remote server */
+    if ((buflen = try_cache(clientfd, cachebuf, MAX_OBJECT_SIZE)) > 0) {
+        /* cache success */
+        printf("This uri has been cached successfully.\n");
+        cache_write(&cache, uri, urilen, cachebuf, buflen);
+        Rio_writen_s(fd, cachebuf, buflen);
+    } else {
+        /* cache failed */
+        write_back(fd, clientfd, cachebuf, -buflen);
+    }
     /* close fd and free the fields */
     free(header.field);
     Close(clientfd);
@@ -263,16 +284,45 @@ int generate_header(char *buf, struct Header *header) {
     return sprintf(buf, "%s\r\n", buf);
 }
 
-/* write_back - receive msg from CLIENTFD, and write it to the CONNFD */
-void write_back(int connfd, int clientfd) {
+/* try_cache - receive msg from CLIENTFD, and try to cache it into BUF,
+ * if BUF has enough space for store this msg, then return the length of
+ * this msg, else return a negtive number, which represent the length of
+ * msg has been read into BUF */
+int try_cache(int clientfd, char *buf, int buflen) {
+    rio_t rio;
+    char line[FIELDSIZE];
+    int readcnt, idx;
+
+    idx = 0;
+    Rio_readinitb(&rio, clientfd);
+    while ((readcnt = Rio_readlineb_s(&rio, line, FIELDSIZE)) > 0) {
+        if (idx + readcnt > buflen) {
+            return -idx;
+        }
+        memcpy(buf+idx, line, readcnt);
+        idx += readcnt;
+    }
+    /* assume that the remote server will not close this connection */
+    return idx;
+}
+
+/* write_back - if the BUF do not have enough space to cache, then call
+ * this function. first write the msg in BUF to CONNFD, then read msg from
+ * CLIENTFD, and write it into CONNFD */
+void write_back(int connfd, int clientfd, char *buf, int buflen) {
     rio_t rio;
     char line[FIELDSIZE];
     int readcnt;
 
+    /* write msg in BUF into CONNFD */
+    if (Rio_writen_s(connfd, buf, buflen) < 0) {
+        return;         /* if the user closed connection */
+    }
+    /* read msg from CLIENTFD and write it into CONNFD */
     Rio_readinitb(&rio, clientfd);
     while ((readcnt = Rio_readlineb_s(&rio, line, FIELDSIZE)) > 0) {
         if (Rio_writen_s(connfd, line, readcnt) < 0) {
-            break;          /* received signal SIGPIPE */
+            return;      /* received signal SIGPIPE */
         }
     }
 }
